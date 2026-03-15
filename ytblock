@@ -1024,11 +1024,75 @@ def cmd_install(args):
 """)
 
 
+def _uninstall_friction():
+    """Friction gate for uninstall: 3 math problems + guilt trip typing."""
+    print("\n  You want to uninstall ytblock? Fine. But you'll have to earn it.\n")
+
+    # Step 1: 3 math problems
+    print("  ━━━ Step 1/2: Math Problems ━━━\n")
+    print("  Solve 3 problems. 3 attempts each. Fail = aborted.\n")
+    problems = _generate_math_problems()[:3]
+    for i, (question, answer, accept) in enumerate(problems, 1):
+        solved = False
+        for attempt in range(3):
+            try:
+                user_answer = input(f"  [{i}/3] {question} > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Aborted. ytblock stays installed.")
+                sys.exit(1)
+            if user_answer in accept:
+                print("  Correct!\n")
+                solved = True
+                break
+            else:
+                remaining = 2 - attempt
+                if remaining > 0:
+                    print(f"  Wrong. {remaining} attempt(s) left.\n")
+                else:
+                    print("  Wrong. Uninstall aborted. ytblock stays installed.\n")
+        if not solved:
+            sys.exit(1)
+
+    # Step 2: Guilt trip typing
+    print("  ━━━ Step 2/2: Type Confirmation ━━━\n")
+    phrase = ("I am choosing to give up on my goals and let YouTube consume "
+              "my time because I lack the discipline to keep this blocker installed")
+    print("  Type the following phrase EXACTLY (input is hidden):\n")
+    print(f'  "{phrase}"\n')
+
+    while True:
+        print("  Start typing: ", end="", flush=True)
+        pos = 0
+        failed = False
+        while pos < len(phrase):
+            ch = read_char()
+            if ch == "\x03":
+                print("\n\n  Aborted. ytblock stays installed.")
+                sys.exit(1)
+            if ch == "\x7f" or ch == "\x08":
+                if pos > 0:
+                    pos -= 1
+                    print("\b \b", end="", flush=True)
+                continue
+            if ch == phrase[pos]:
+                print("*", end="", flush=True)
+                pos += 1
+            else:
+                print(f"\n\n  Mismatch at character {pos + 1}. Start over.\n")
+                failed = True
+                break
+        if not failed:
+            print("\n\n  ...acknowledged.\n")
+            return
+
+
 def cmd_uninstall(args):
     """Remove everything."""
     if os.geteuid() != 0:
         print("  Error: uninstall requires sudo. Run: sudo ytblock uninstall")
         sys.exit(1)
+
+    _uninstall_friction()
 
     print("\n  Uninstalling ytblock...\n")
 
