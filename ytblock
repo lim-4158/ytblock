@@ -58,14 +58,14 @@ COOLDOWN_SECONDS = 30 * 60  # 30 minutes
 UNBLOCK_SECONDS = 30 * 60   # 30 minutes
 
 CONFIRMATION_PHRASES = [
-    "I solemnly swear that I am using YouTube for a legitimate and time-bounded purpose and not just doom-scrolling shorts",
-    "Watching YouTube right now is a conscious decision I am making and I accept full responsibility for the time I will spend",
-    "I have exhausted all other options and genuinely need to access YouTube for a specific task that I can articulate clearly",
-    "I understand that this temporary access will expire in thirty minutes and I will not attempt to circumvent the reblock",
-    "I am choosing to watch YouTube instead of doing something productive and I am at peace with that decision right now",
-    "The next thirty minutes of YouTube are a deliberate choice not an impulse and I have a specific video in mind to watch",
-    "I acknowledge that my brain is trying to trick me into watching YouTube and I have determined this is a genuine need",
-    "I promise myself that I will close YouTube the moment I finish what I came here to do and not click on any recommendations",
+    "I have mass-produced more screen time than a Samsung factory and yet here I am begging a Python script to let me watch one more video",
+    "I hereby declare before this terminal and all running processes that I am not doom-scrolling I have a very specific and legitimate video in mind",
+    "My attention span has been eroded to the point where a thirty-second short feels like a documentary and I still want more YouTube",
+    "I am a grown adult negotiating with a rickroll server for permission to watch YouTube and I need to sit with that for a moment",
+    "The YouTube algorithm knows me better than my own mother and I am willingly crawling back to it like it did not waste three years of my life",
+    "I solemnly swear on my commit history that I will close YouTube after one video and not emerge four hours later wondering where the day went",
+    "Dear future me I know you are watching this from a pile of regret but present me really thinks this time will be different",
+    "In my defense nobody told me that clicking one video about how bridges are built would lead to five hours of watching hydraulic press compilations",
 ]
 
 PHYSICAL_CHALLENGES = [
