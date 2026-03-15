@@ -652,20 +652,61 @@ def step2_typing(state):
             return True
 
 
+def _timed_input(prompt, timeout=30):
+    """Read input with a countdown timer. Returns (answer, timed_out)."""
+    result = [None]
+    timed_out = [False]
+
+    def read_input():
+        try:
+            result[0] = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            result[0] = None
+
+    t = threading.Thread(target=read_input, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        timed_out[0] = True
+        print("\n\n  Time's up!")
+        # Send a newline to unblock input()
+        try:
+            os.write(sys.stdin.fileno(), b"\n")
+        except Exception:
+            pass
+        t.join(1)
+    return result[0], timed_out[0]
+
+
 def step3_math(state):
     """Step 3: Solve 5 math problems of increasing difficulty."""
     print("\n━━━ Step 3/5: Math Problems ━━━\n")
-    print("  Solve 5 problems to continue. 3 attempts each.\n")
+    print("  Solve 5 problems to continue. 3 attempts each. 30 seconds per problem.\n")
 
     problems = _generate_math_problems()
     for i, (question, answer, accept) in enumerate(problems, 1):
         solved = False
         for attempt in range(3):
-            try:
-                user_answer = input(f"  [{i}/5] {question} > ").strip()
-            except (EOFError, KeyboardInterrupt):
+            user_answer, timed_out = _timed_input(f"  [{i}/5] ({30}s) {question} > ")
+
+            if user_answer is None:
+                if timed_out:
+                    print("  Restarting from step 1.\n")
+                    state["disable_step"] = 0
+                    state["cooldown_started"] = None
+                    save_state(state)
+                    return False
                 print("\n  Aborted.")
                 sys.exit(1)
+
+            user_answer = user_answer.strip()
+
+            if timed_out:
+                print("  Restarting from step 1.\n")
+                state["disable_step"] = 0
+                state["cooldown_started"] = None
+                save_state(state)
+                return False
 
             if user_answer in accept:
                 print(f"  Correct!\n")
@@ -832,7 +873,7 @@ def run_disable():
         state["disable_step"] = 3
         save_state(state)
 
-    # Step 3: Math
+    # Step 3: Math (30s timer per problem)
     if state.get("disable_step", 0) <= 3:
         if not step3_math(state):
             print("  Failed math. Progress reset to step 1.")
@@ -1049,22 +1090,20 @@ def cmd_install(args):
 """)
 
 
-def _uninstall_friction():
-    """Friction gate for uninstall: 3 math problems + guilt trip typing."""
-    print("\n  You want to uninstall ytblock? Fine. But you'll have to earn it.\n")
-
-    # Step 1: 3 math problems
-    print("  ━━━ Step 1/2: Math Problems ━━━\n")
-    print("  Solve 3 problems. 3 attempts each. Fail = aborted.\n")
+def _run_uninstall_math():
+    """Run 3 timed math problems for uninstall. Exits on failure."""
+    print("  ━━━ Step 1/3: Math Problems ━━━\n")
+    print("  Solve 3 problems. 3 attempts each. 30 seconds per problem.\n")
     problems = _generate_math_problems()[:3]
     for i, (question, answer, accept) in enumerate(problems, 1):
         solved = False
         for attempt in range(3):
-            try:
-                user_answer = input(f"  [{i}/3] {question} > ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\n  Aborted. ytblock stays installed.")
+            user_answer, timed_out = _timed_input(f"  [{i}/3] (30s) {question} > ")
+            if user_answer is None or timed_out:
+                msg = "Time's up!" if timed_out else ""
+                print(f"  {msg} Uninstall aborted. ytblock stays installed.\n")
                 sys.exit(1)
+            user_answer = user_answer.strip()
             if user_answer in accept:
                 print("  Correct!\n")
                 solved = True
@@ -1078,7 +1117,50 @@ def _uninstall_friction():
         if not solved:
             sys.exit(1)
 
-    # Step 2 & 3: Typing challenges
+
+def _uninstall_typing(step_title, phrase, ack_msg):
+    """Run a typing challenge. Returns True on success, 'paste' on paste detected."""
+    print(f"  ━━━ {step_title} ━━━\n")
+    print("  Type the following phrase EXACTLY (input is hidden):\n")
+    print(f'  "{phrase}"\n')
+
+    while True:
+        print("  Start typing: ", end="", flush=True)
+        pos = 0
+        failed = False
+        while pos < len(phrase):
+            ch = read_char()
+            if ch == "\x03":
+                print("\n\n  Aborted. ytblock stays installed.")
+                sys.exit(1)
+            if ch == "\x16":  # Paste detected
+                print("\n\n  Copy-paste detected. Back to math.\n")
+                return "paste"
+            if ch == "\x7f" or ch == "\x08":
+                if pos > 0:
+                    pos -= 1
+                    print("\b \b", end="", flush=True)
+                continue
+            if ch == phrase[pos]:
+                print("*", end="", flush=True)
+                pos += 1
+            else:
+                print(f"\n\n  Mismatch at character {pos + 1}. Start over.\n")
+                failed = True
+                break
+        if not failed:
+            print(f"\n\n  {ack_msg}\n")
+            return True
+
+
+def _uninstall_friction():
+    """Friction gate for uninstall: 3 math problems + guilt trip typing."""
+    print("\n  You want to uninstall ytblock? Fine. But you'll have to earn it.\n")
+
+    # Step 1: 3 math problems (30s timer)
+    _run_uninstall_math()
+
+    # Step 2 & 3: Typing challenges (paste = back to math)
     uninstall_phrases = [
         ("Step 2/3: Guilt Trip",
          "I am choosing to give up on my goals and let YouTube consume "
@@ -1090,39 +1172,15 @@ def _uninstall_friction():
          "...damn right."),
     ]
 
-    for step_title, phrase, ack_msg in uninstall_phrases:
-        print(f"  ━━━ {step_title} ━━━\n")
-        print("  Type the following phrase EXACTLY (input is hidden):\n")
-        print(f'  "{phrase}"\n')
-
-        while True:
-            print("  Start typing: ", end="", flush=True)
-            pos = 0
-            failed = False
-            while pos < len(phrase):
-                ch = read_char()
-                if ch == "\x03":
-                    print("\n\n  Aborted. ytblock stays installed.")
-                    sys.exit(1)
-                if ch == "\x16":  # Paste detected
-                    print("\n\n  Copy-paste detected. Nice try. Start over.\n")
-                    failed = True
-                    break
-                if ch == "\x7f" or ch == "\x08":
-                    if pos > 0:
-                        pos -= 1
-                        print("\b \b", end="", flush=True)
-                    continue
-                if ch == phrase[pos]:
-                    print("*", end="", flush=True)
-                    pos += 1
-                else:
-                    print(f"\n\n  Mismatch at character {pos + 1}. Start over.\n")
-                    failed = True
-                    break
-            if not failed:
-                print(f"\n\n  {ack_msg}\n")
-                break
+    i = 0
+    while i < len(uninstall_phrases):
+        step_title, phrase, ack_msg = uninstall_phrases[i]
+        result = _uninstall_typing(step_title, phrase, ack_msg)
+        if result == "paste":
+            _run_uninstall_math()
+            i = 0  # restart typing from first phrase
+            continue
+        i += 1
 
 
 def cmd_uninstall(args):
