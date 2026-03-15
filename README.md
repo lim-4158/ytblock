@@ -154,6 +154,55 @@ Cert:      found
 | `/Library/LaunchDaemons/com.local.ytblock.server.plist` | Server daemon config |
 | `/usr/local/bin/ytblock` | Symlink for PATH access |
 
+## Know what it does, know how to undo it, know what to check
+
+This tool requires `sudo` and modifies system files. You don't have to trust it — you can verify everything it does and undo it manually.
+
+### Verify what it changed
+
+```bash
+# Check what it added to hosts
+cat /etc/hosts | grep YTBLOCK
+
+# Check if the daemon is running
+sudo launchctl list | grep ytblock
+
+# Check if the cert is trusted
+security find-certificate -c "YTBlock" /Library/Keychains/System.keychain
+
+# Check what's listening on ports 80/443
+lsof -i :80 -i :443
+```
+
+### Manual undo (no ytblock needed)
+
+If ytblock breaks, or you don't trust the uninstall command, these 5 commands reverse everything by hand:
+
+```bash
+# 1. Remove YouTube entries from hosts
+sudo sed -i '' '/YTBLOCK START/,/YTBLOCK END/d' /etc/hosts
+
+# 2. Stop and remove the daemon
+sudo launchctl unload /Library/LaunchDaemons/com.local.ytblock.server.plist
+sudo rm /Library/LaunchDaemons/com.local.ytblock.server.plist
+
+# 3. Remove the cert from keychain
+sudo security delete-certificate -c "YTBlock CA" /Library/Keychains/System.keychain
+
+# 4. Remove all files
+rm -rf ~/.youtube-blocker /usr/local/bin/ytblock
+
+# 5. Flush DNS cache
+sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder
+```
+
+### What it does NOT do
+
+- No network calls (the rickroll video is bundled in the repo)
+- No data collection, no analytics, no phoning home
+- No modification of browser data, profiles, or extensions
+- No changes outside the 4 specific locations listed in [Files](#files)
+
 ## Uninstall
 
 ```bash
