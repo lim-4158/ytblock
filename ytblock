@@ -216,13 +216,24 @@ def _default_state():
 
 def _acquire_lock(exclusive=False):
     """Acquire the state lock file. Returns the lock fd."""
-    fd = os.open(STATE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fd = os.open(STATE_LOCK, os.O_CREAT | os.O_RDWR, 0o666)
+    except PermissionError:
+        # Lock file owned by root — fix permissions if we're root, else use temp
+        if os.geteuid() == 0:
+            os.chmod(STATE_LOCK, 0o666)
+            fd = os.open(STATE_LOCK, os.O_CREAT | os.O_RDWR, 0o666)
+        else:
+            # Fall back to no locking rather than crashing
+            return None
     fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
     return fd
 
 
 def _release_lock(fd):
     """Release and close the state lock file."""
+    if fd is None:
+        return
     fcntl.flock(fd, fcntl.LOCK_UN)
     os.close(fd)
 
@@ -242,7 +253,8 @@ def save_state(state):
     lock_fd = _acquire_lock(exclusive=True)
     try:
         tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w") as f:
+        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o666)
+        with os.fdopen(fd, "w") as f:
             json.dump(state, f, indent=2)
         os.replace(tmp, STATE_FILE)
     finally:
