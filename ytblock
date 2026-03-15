@@ -1053,37 +1053,47 @@ def _uninstall_friction():
         if not solved:
             sys.exit(1)
 
-    # Step 2: Guilt trip typing
-    print("  ━━━ Step 2/2: Type Confirmation ━━━\n")
-    phrase = ("I am choosing to give up on my goals and let YouTube consume "
-              "my time because I lack the discipline to keep this blocker installed")
-    print("  Type the following phrase EXACTLY (input is hidden):\n")
-    print(f'  "{phrase}"\n')
+    # Step 2 & 3: Typing challenges
+    uninstall_phrases = [
+        ("Step 2/3: Guilt Trip",
+         "I am choosing to give up on my goals and let YouTube consume "
+         "my time because I lack the discipline to keep this blocker installed",
+         "...acknowledged."),
+        ("Step 3/3: The Truth",
+         "Kevin is the best there will ever be. Kevin is the smartest, "
+         "handsome-st, hott-est human being there is. I LOVE KEVIIINNNN!!!!",
+         "...damn right."),
+    ]
 
-    while True:
-        print("  Start typing: ", end="", flush=True)
-        pos = 0
-        failed = False
-        while pos < len(phrase):
-            ch = read_char()
-            if ch == "\x03":
-                print("\n\n  Aborted. ytblock stays installed.")
-                sys.exit(1)
-            if ch == "\x7f" or ch == "\x08":
-                if pos > 0:
-                    pos -= 1
-                    print("\b \b", end="", flush=True)
-                continue
-            if ch == phrase[pos]:
-                print("*", end="", flush=True)
-                pos += 1
-            else:
-                print(f"\n\n  Mismatch at character {pos + 1}. Start over.\n")
-                failed = True
+    for step_title, phrase, ack_msg in uninstall_phrases:
+        print(f"  ━━━ {step_title} ━━━\n")
+        print("  Type the following phrase EXACTLY (input is hidden):\n")
+        print(f'  "{phrase}"\n')
+
+        while True:
+            print("  Start typing: ", end="", flush=True)
+            pos = 0
+            failed = False
+            while pos < len(phrase):
+                ch = read_char()
+                if ch == "\x03":
+                    print("\n\n  Aborted. ytblock stays installed.")
+                    sys.exit(1)
+                if ch == "\x7f" or ch == "\x08":
+                    if pos > 0:
+                        pos -= 1
+                        print("\b \b", end="", flush=True)
+                    continue
+                if ch == phrase[pos]:
+                    print("*", end="", flush=True)
+                    pos += 1
+                else:
+                    print(f"\n\n  Mismatch at character {pos + 1}. Start over.\n")
+                    failed = True
+                    break
+            if not failed:
+                print(f"\n\n  {ack_msg}\n")
                 break
-        if not failed:
-            print("\n\n  ...acknowledged.\n")
-            return
 
 
 def cmd_uninstall(args):
