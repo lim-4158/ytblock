@@ -911,27 +911,17 @@ def cmd_install(args):
     os.chmod(script_dst, 0o755)
     print("  [2/8] Installed script")
 
-    # Download rickroll video
+    # Copy bundled rickroll video
     video_dst = os.path.join(real_base, "rickroll.mp4")
+    video_src = os.path.join(os.path.dirname(script_src), "rickroll.mp4")
     if not os.path.exists(video_dst):
-        print("  [3/8] Downloading rickroll video (this may take a moment)...")
-        yt_dlp = "/opt/homebrew/bin/yt-dlp"
-        if not os.path.exists(yt_dlp):
-            # Try PATH
-            yt_dlp = "yt-dlp"
-        try:
-            subprocess.run(
-                [
-                    yt_dlp,
-                    "-f", "mp4",
-                    "-o", video_dst,
-                    "--max-filesize", "100M",
-                    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                ],
-                check=True,
-            )
-        except FileNotFoundError:
-            print("  Error: yt-dlp not found. Install with: brew install yt-dlp")
+        if os.path.exists(video_src):
+            import shutil as _shutil
+            _shutil.copy2(video_src, video_dst)
+            print("  [3/8] Copied rickroll video")
+        else:
+            print("  Error: rickroll.mp4 not found next to the script.")
+            print("  Make sure you're running install from the cloned repo directory.")
             sys.exit(1)
     else:
         print("  [3/8] Rickroll video already exists")

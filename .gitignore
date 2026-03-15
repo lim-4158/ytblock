@@ -1,5 +1,4 @@
 # Runtime files (generated during install, not part of the repo)
-rickroll.mp4
 cert.pem
 key.pem
 state.json

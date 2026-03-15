@@ -42,11 +42,7 @@ After all 5 steps, YouTube unblocks for **30 minutes only**, then automatically 
 
 - macOS (uses `/etc/hosts`, `launchd`, and Keychain)
 - Python 3.9+ (ships with macOS)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) for downloading the rickroll video during install
-
-```bash
-brew install yt-dlp
-```
+- No other dependencies — the rickroll video (10s, 1MB) is bundled in the repo
 
 ## Install
 
@@ -59,7 +55,7 @@ sudo ./ytblock install
 
 The installer will:
 1. Copy the script to `~/.youtube-blocker/`
-2. Download the rickroll video
+2. Copy the bundled rickroll video
 3. Generate and trust an SSL certificate (for HTTPS interception)
 4. Block 10 YouTube domains in `/etc/hosts`
 5. Start a persistent server daemon via `launchd`
