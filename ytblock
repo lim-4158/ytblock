@@ -582,20 +582,47 @@ def run_server():
 
 # ── Friction-Based Disable ─────────────────────────────────────────────
 
+def _enable_bracketed_paste():
+    """Enable bracketed paste mode — terminal wraps paste with escape sequences."""
+    sys.stdout.write("\x1b[?2004h")
+    sys.stdout.flush()
+
+
+def _disable_bracketed_paste():
+    """Disable bracketed paste mode."""
+    sys.stdout.write("\x1b[?2004l")
+    sys.stdout.flush()
+
+
 def read_char():
-    """Read a single character without echo. Detects and rejects paste."""
+    """Read a single character without echo. Detects paste via bracketed paste mode."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
         ch = sys.stdin.read(1)
-        # Wait briefly then check if more characters are buffered (paste detection)
-        # Human typing: >50ms between keys. Paste: <5ms between characters.
-        if select.select([fd], [], [], 0.05)[0]:
-            # Drain the entire paste buffer — keep reading until 200ms of silence
-            while select.select([fd], [], [], 0.2)[0]:
-                sys.stdin.read(1)
-            return "\x16"  # Return a sentinel for "paste detected"
+        # Detect bracketed paste: terminal sends \x1b[200~ before paste
+        if ch == "\x1b":
+            # Check if this is the start of a paste bracket
+            buf = ""
+            while select.select([fd], [], [], 0.05)[0]:
+                buf += sys.stdin.read(1)
+                if buf == "[200~":
+                    # Paste detected — drain until end bracket \x1b[201~
+                    end_buf = ""
+                    while True:
+                        c = sys.stdin.read(1)
+                        end_buf += c
+                        if end_buf.endswith("\x1b[201~"):
+                            break
+                        # Keep only last 6 chars to match the end sequence
+                        if len(end_buf) > 100:
+                            end_buf = end_buf[-6:]
+                    return "\x16"  # Paste detected sentinel
+                if len(buf) > 5:
+                    break
+            # Not a paste bracket — just an escape key press
+            return "\x1b"
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     return ch
@@ -634,6 +661,7 @@ def step2_typing(state):
     phrase = random.choice(CONFIRMATION_PHRASES)
     print("  Type the following phrase EXACTLY (input is hidden to prevent copy-paste):\n")
     print(f'  "{phrase}"\n')
+    _enable_bracketed_paste()
 
     while True:
         print("  Start typing: ", end="", flush=True)
@@ -661,6 +689,7 @@ def step2_typing(state):
                 failed = True
                 break
         if not failed:
+            _disable_bracketed_paste()
             print("\n\n  Confirmed!")
             return True
 
@@ -1121,6 +1150,7 @@ def _uninstall_typing(step_title, phrase, ack_msg):
     print(f"  ━━━ {step_title} ━━━\n")
     print("  Type the following phrase EXACTLY (input is hidden):\n")
     print(f'  "{phrase}"\n')
+    _enable_bracketed_paste()
 
     while True:
         print("  Start typing: ", end="", flush=True)
@@ -1129,9 +1159,11 @@ def _uninstall_typing(step_title, phrase, ack_msg):
         while pos < len(phrase):
             ch = read_char()
             if ch == "\x03":
+                _disable_bracketed_paste()
                 print("\n\n  Aborted. ytblock stays installed.")
                 sys.exit(1)
             if ch == "\x16":  # Paste detected
+                _disable_bracketed_paste()
                 print("\n\n  Copy-paste detected. Back to math.\n")
                 return "paste"
             if ch == "\x7f" or ch == "\x08":
@@ -1147,6 +1179,7 @@ def _uninstall_typing(step_title, phrase, ack_msg):
                 failed = True
                 break
         if not failed:
+            _disable_bracketed_paste()
             print(f"\n\n  {ack_msg}\n")
             return True
 
