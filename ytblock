@@ -137,7 +137,7 @@ RICKROLL_HTML = """\
 <body>
     <h1>You've Been Rickrolled</h1>
     <div class="counter">Times rickrolled: <span id="count">0</span></div>
-    <video autoplay loop playsinline src="/rickroll.mp4"></video>
+    <video id="vid" autoplay loop playsinline src="/rickroll.mp4"></video>
     <p class="message">Get back to work. You know you should.</p>
     <p class="tip">Run <code style="color:#ff6b6b">ytblock disable</code> if you really need YouTube. Good luck.</p>
     <script>
@@ -150,6 +150,11 @@ RICKROLL_HTML = """\
                 if(regs.length>0){location.reload();}
             });
         }
+        var v=document.getElementById('vid');
+        v.play().catch(function(){
+            v.muted=true;
+            v.play();
+        });
     </script>
 </body>
 </html>
