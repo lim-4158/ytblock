@@ -12,6 +12,7 @@ import http.server
 import json
 import os
 import random
+import select
 import signal
 import socketserver
 import ssl
@@ -570,12 +571,18 @@ def run_server():
 # ── Friction-Based Disable ─────────────────────────────────────────────
 
 def read_char():
-    """Read a single character without echo (blocks copy-paste of full strings)."""
+    """Read a single character without echo. Detects and rejects paste."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
         ch = sys.stdin.read(1)
+        # Check if more characters are buffered (paste detection)
+        if select.select([fd], [], [], 0.0)[0]:
+            # Drain the paste buffer
+            while select.select([fd], [], [], 0.0)[0]:
+                sys.stdin.read(1)
+            return "\x16"  # Return a sentinel for "paste detected"
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     return ch
@@ -624,6 +631,10 @@ def step2_typing(state):
             if ch == "\x03":  # Ctrl+C
                 print("\n\n  Aborted.")
                 sys.exit(1)
+            if ch == "\x16":  # Paste detected
+                print("\n\n  Copy-paste detected. Nice try. Start over.\n")
+                failed = True
+                break
             if ch == "\x7f" or ch == "\x08":  # Backspace
                 if pos > 0:
                     pos -= 1
@@ -1093,6 +1104,10 @@ def _uninstall_friction():
                 if ch == "\x03":
                     print("\n\n  Aborted. ytblock stays installed.")
                     sys.exit(1)
+                if ch == "\x16":  # Paste detected
+                    print("\n\n  Copy-paste detected. Nice try. Start over.\n")
+                    failed = True
+                    break
                 if ch == "\x7f" or ch == "\x08":
                     if pos > 0:
                         pos -= 1
