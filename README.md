@@ -51,6 +51,9 @@ git clone https://github.com/lim-4158/ytblock.git
 cd ytblock
 chmod +x ytblock
 sudo ./ytblock install
+
+# Optional: enable autoplay with sound (restart Chrome after)
+defaults write com.google.Chrome AutoplayAllowlist -array "https://www.youtube.com" "https://youtube.com" "https://m.youtube.com" "https://music.youtube.com"
 ```
 
 The installer will:
@@ -61,15 +64,9 @@ The installer will:
 5. Start a persistent server daemon via `launchd`
 6. Symlink `ytblock` to `/usr/local/bin/`
 
-### Chrome autoplay (optional)
+Without the optional Chrome command, the rickroll video starts muted with a "Click for sound" button. With it, the rickroll autoplays with full audio — no click needed.
 
-To get the rickroll to autoplay with sound:
-
-```bash
-defaults write com.google.Chrome AutoplayAllowlist -array "https://127.0.0.1" "http://127.0.0.1"
-```
-
-Restart Chrome after running this. For Safari: Safari > Settings > Websites > Auto-Play > set `127.0.0.1` to "Allow All Auto-Play".
+For Safari: Safari > Settings > Websites > Auto-Play > set `127.0.0.1` to "Allow All Auto-Play".
 
 ## Usage
 

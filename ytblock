@@ -137,7 +137,16 @@ RICKROLL_HTML = """\
 <body>
     <h1>You've Been Rickrolled</h1>
     <div class="counter">Times rickrolled: <span id="count">0</span></div>
-    <video id="vid" autoplay loop playsinline src="/rickroll.mp4"></video>
+    <div style="position:relative;display:inline-block;cursor:pointer;" id="video-wrap">
+        <video id="vid" autoplay loop muted playsinline src="/rickroll.mp4"></video>
+        <div id="unmute-btn" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+            background:rgba(255,107,107,0.9);color:#fff;padding:0.8rem 1.8rem;border-radius:12px;
+            font-size:1.2rem;font-weight:bold;pointer-events:none;
+            animation:pulse 2s ease-in-out infinite;">
+            Click for sound
+        </div>
+    </div>
+    <style>@keyframes pulse{0%,100%{opacity:1;transform:translate(-50%,-50%) scale(1);}50%{opacity:.7;transform:translate(-50%,-50%) scale(1.05);}}</style>
     <p class="message">Get back to work. You know you should.</p>
     <p class="tip">Run <code style="color:#ff6b6b">ytblock disable</code> if you really need YouTube. Good luck.</p>
     <script>
@@ -151,9 +160,13 @@ RICKROLL_HTML = """\
             });
         }
         var v=document.getElementById('vid');
-        v.play().catch(function(){
-            v.muted=true;
-            v.play();
+        var btn=document.getElementById('unmute-btn');
+        v.play().then(function(){
+            v.muted=false;
+            v.play().then(function(){btn.style.display='none';}).catch(function(){});
+        }).catch(function(){v.muted=true;v.play();});
+        document.getElementById('video-wrap').addEventListener('click',function(){
+            v.muted=false;v.play();btn.style.display='none';
         });
     </script>
 </body>
