@@ -51,7 +51,7 @@ brew install yt-dlp
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ytblock.git
+git clone https://github.com/lim-4158/ytblock.git
 cd ytblock
 chmod +x ytblock
 sudo ./ytblock install
