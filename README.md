@@ -6,6 +6,17 @@ A YouTube addiction blocker for macOS that rickrolls you every time you try to v
 ![macos](https://img.shields.io/badge/platform-macOS-000)
 ![python](https://img.shields.io/badge/python-3.9+-blue)
 ![zero deps](https://img.shields.io/badge/dependencies-0-green)
+![vibecoded](https://img.shields.io/badge/vibecoded-yes-ff69b4)
+
+> **Warning: This project was vibecoded.** The entire thing — script, server, friction system, security hardening — was built through a conversational back-and-forth with Claude Code (Opus 4.6). No line was written by hand. It was reviewed and audited by AI agents, bugs were found and fixed, but it has **not been battle-tested in production** by a large user base.
+>
+> **Why you should be careful:**
+> - It modifies `/etc/hosts` (a system-critical file that controls DNS resolution)
+> - It installs a LaunchDaemon that runs as **root** on ports 80 and 443
+> - It adds a self-signed SSL certificate to your **system keychain**
+> - A bug in any of these areas could break your network, lock you out, or leave orphaned system-level changes
+>
+> **Read the code before you install.** It's a single Python file — no hidden dependencies, no minification, no magic. If something goes wrong, `sudo ytblock uninstall` should clean everything up, but "should" is doing some heavy lifting in a vibecoded project. Use at your own risk.
 
 ## What it does
 
