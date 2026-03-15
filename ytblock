@@ -589,10 +589,11 @@ def read_char():
     try:
         tty.setraw(fd)
         ch = sys.stdin.read(1)
-        # Check if more characters are buffered (paste detection)
-        if select.select([fd], [], [], 0.0)[0]:
+        # Wait briefly then check if more characters are buffered (paste detection)
+        # Human typing: >30ms between keys. Paste: <5ms between characters.
+        if select.select([fd], [], [], 0.03)[0]:
             # Drain the paste buffer
-            while select.select([fd], [], [], 0.0)[0]:
+            while select.select([fd], [], [], 0.01)[0]:
                 sys.stdin.read(1)
             return "\x16"  # Return a sentinel for "paste detected"
     finally:
