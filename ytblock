@@ -55,7 +55,7 @@ YOUTUBE_DOMAINS = [
     "gaming.youtube.com",
 ]
 
-COOLDOWN_SECONDS = 30 * 60  # 30 minutes
+COOLDOWN_SECONDS = 5 * 60   # 5 minutes
 UNBLOCK_SECONDS = 30 * 60   # 30 minutes
 
 CONFIRMATION_PHRASES = [
@@ -610,7 +610,7 @@ def step1_cooldown(state):
         state["disable_step"] = 1
         save_state(state)
         resume_time = datetime.datetime.now() + datetime.timedelta(seconds=COOLDOWN_SECONDS)
-        print(f"  Starting 30-minute cooldown...")
+        print(f"  Starting 5-minute cooldown...")
         print(f"  Come back and run `ytblock disable` again after {resume_time.strftime('%H:%M')}.")
         return False
 
@@ -681,32 +681,17 @@ def _timed_input(prompt, timeout=30):
 def step3_math(state):
     """Step 3: Solve 5 math problems of increasing difficulty."""
     print("\n━━━ Step 3/5: Math Problems ━━━\n")
-    print("  Solve 5 problems to continue. 3 attempts each. 30 seconds per problem.\n")
+    print("  Solve 5 problems to continue. 3 attempts each.\n")
 
     problems = _generate_math_problems()
     for i, (question, answer, accept) in enumerate(problems, 1):
         solved = False
         for attempt in range(3):
-            user_answer, timed_out = _timed_input(f"  [{i}/5] ({30}s) {question} > ")
-
-            if user_answer is None:
-                if timed_out:
-                    print("  Restarting from step 1.\n")
-                    state["disable_step"] = 0
-                    state["cooldown_started"] = None
-                    save_state(state)
-                    return False
+            try:
+                user_answer = input(f"  [{i}/5] {question} > ").strip()
+            except (EOFError, KeyboardInterrupt):
                 print("\n  Aborted.")
                 sys.exit(1)
-
-            user_answer = user_answer.strip()
-
-            if timed_out:
-                print("  Restarting from step 1.\n")
-                state["disable_step"] = 0
-                state["cooldown_started"] = None
-                save_state(state)
-                return False
 
             if user_answer in accept:
                 print(f"  Correct!\n")
