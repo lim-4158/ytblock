@@ -1111,7 +1111,7 @@ def cmd_status(args):
     count = state.get("rickroll_count", 0)
 
     print(f"\n  ytblock status")
-    print(f"  {'\u2501' * 30}")
+    print("  " + "\u2501" * 30)
     print(f"  Status:    {'BLOCKED' if blocked else 'UNBLOCKED'}")
     print(f"  Rickrolls: {count}")
 
