@@ -1,0 +1,1214 @@
+#!/usr/bin/env python3
+"""
+ytblock — YouTube addiction blocker for macOS.
+Redirects all YouTube traffic to a local rickroll page.
+Friction-based disable with 5-step process and auto-reblock.
+"""
+
+import argparse
+import datetime
+import fcntl
+import http.server
+import json
+import os
+import random
+import signal
+import socketserver
+import ssl
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+import tty
+import termios
+
+# ── Constants ──────────────────────────────────────────────────────────
+
+BASE_DIR = os.path.dirname(os.path.realpath(__file__))
+STATE_FILE = os.path.join(BASE_DIR, "state.json")
+STATE_LOCK = os.path.join(BASE_DIR, "state.lock")
+JOURNAL_FILE = os.path.join(BASE_DIR, "journal.log")
+HTML_FILE = os.path.join(BASE_DIR, "rickroll.html")
+VIDEO_FILE = os.path.join(BASE_DIR, "rickroll.mp4")
+CERT_FILE = os.path.join(BASE_DIR, "cert.pem")
+KEY_FILE = os.path.join(BASE_DIR, "key.pem")
+LOG_FILE = os.path.join(BASE_DIR, "server.log")
+PLIST_PATH = "/Library/LaunchDaemons/com.local.ytblock.server.plist"
+SYMLINK_PATH = "/usr/local/bin/ytblock"
+HOSTS_PATH = "/etc/hosts"
+
+HOSTS_START = "# >>> YTBLOCK START -- DO NOT EDIT <<<"
+HOSTS_END = "# >>> YTBLOCK END <<<"
+
+YOUTUBE_DOMAINS = [
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+    "music.youtube.com",
+    "tv.youtube.com",
+    "studio.youtube.com",
+    "gaming.youtube.com",
+]
+
+COOLDOWN_SECONDS = 30 * 60  # 30 minutes
+UNBLOCK_SECONDS = 30 * 60   # 30 minutes
+
+CONFIRMATION_PHRASES = [
+    "I solemnly swear that I am using YouTube for a legitimate and time-bounded purpose and not just doom-scrolling shorts",
+    "Watching YouTube right now is a conscious decision I am making and I accept full responsibility for the time I will spend",
+    "I have exhausted all other options and genuinely need to access YouTube for a specific task that I can articulate clearly",
+    "I understand that this temporary access will expire in thirty minutes and I will not attempt to circumvent the reblock",
+    "I am choosing to watch YouTube instead of doing something productive and I am at peace with that decision right now",
+    "The next thirty minutes of YouTube are a deliberate choice not an impulse and I have a specific video in mind to watch",
+    "I acknowledge that my brain is trying to trick me into watching YouTube and I have determined this is a genuine need",
+    "I promise myself that I will close YouTube the moment I finish what I came here to do and not click on any recommendations",
+]
+
+PHYSICAL_CHALLENGES = [
+    ("Do 20 pushups", "I completed 20 pushups"),
+    ("Do 30 jumping jacks", "I completed 30 jumping jacks"),
+    ("Hold a plank for 60 seconds", "I held a plank for 60 seconds"),
+    ("Do 15 squats", "I completed 15 squats"),
+    ("Do 10 burpees", "I completed 10 burpees"),
+]
+
+RICKROLL_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nice Try</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0f0f0f;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #ff6b6b, #ffa500, #ff6b6b);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .counter {
+            font-size: 1.4rem;
+            color: #ff6b6b;
+            margin: 0.8rem 0 1.5rem;
+        }
+        .counter span {
+            font-weight: bold;
+            font-size: 1.8rem;
+        }
+        video {
+            max-width: min(80vw, 800px);
+            max-height: 60vh;
+            border-radius: 16px;
+            box-shadow: 0 0 40px rgba(255, 107, 107, 0.3);
+        }
+        .message {
+            font-size: 1.2rem;
+            color: #888;
+            margin-top: 1.5rem;
+            text-align: center;
+            max-width: 500px;
+            line-height: 1.6;
+        }
+        .tip {
+            font-size: 0.9rem;
+            color: #555;
+            margin-top: 2rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>You've Been Rickrolled</h1>
+    <div class="counter">Times rickrolled: <span id="count">0</span></div>
+    <video autoplay loop playsinline src="/rickroll.mp4"></video>
+    <p class="message">Get back to work. You know you should.</p>
+    <p class="tip">Run <code style="color:#ff6b6b">ytblock disable</code> if you really need YouTube. Good luck.</p>
+    <script>
+        fetch('/count').then(r=>r.json()).then(d=>{
+            document.getElementById('count').textContent=d.count;
+        }).catch(()=>{});
+    </script>
+</body>
+</html>
+"""
+
+PLIST_TEMPLATE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.ytblock.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>{script_path}</string>
+        <string>serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>{log_path}</string>
+    <key>StandardOutPath</key>
+    <string>{log_path}</string>
+</dict>
+</plist>
+"""
+
+
+# ── State Management ───────────────────────────────────────────────────
+
+def _default_state():
+    return {
+        "rickroll_count": 0,
+        "blocked": True,
+        "unblock_until": None,
+        "cooldown_started": None,
+        "disable_step": 0,
+        "installed_at": None,
+    }
+
+
+def _acquire_lock(exclusive=False):
+    """Acquire the state lock file. Returns the lock fd."""
+    fd = os.open(STATE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    return fd
+
+
+def _release_lock(fd):
+    """Release and close the state lock file."""
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
+def load_state():
+    lock_fd = _acquire_lock(exclusive=False)
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        return _default_state()
+    finally:
+        _release_lock(lock_fd)
+
+
+def save_state(state):
+    lock_fd = _acquire_lock(exclusive=True)
+    try:
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, STATE_FILE)
+    finally:
+        _release_lock(lock_fd)
+
+
+def update_state(fn):
+    """Atomically read-modify-write state. fn(state) should mutate state and optionally return a value."""
+    lock_fd = _acquire_lock(exclusive=True)
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        else:
+            state = _default_state()
+        result = fn(state)
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, STATE_FILE)
+        return result
+    finally:
+        _release_lock(lock_fd)
+
+
+def increment_rickroll():
+    def _inc(state):
+        state["rickroll_count"] += 1
+        return state["rickroll_count"]
+    return update_state(_inc)
+
+
+# ── Hosts File Management ─────────────────────────────────────────────
+
+def hosts_block():
+    """Add YouTube domains to /etc/hosts."""
+    with open(HOSTS_PATH, "r") as f:
+        content = f.read()
+
+    # Remove existing block if present
+    content = _remove_hosts_block(content)
+
+    lines = [HOSTS_START]
+    for domain in YOUTUBE_DOMAINS:
+        lines.append(f"127.0.0.1  {domain}")
+    lines.append(HOSTS_END)
+    lines.append("")
+
+    content = content.rstrip("\n") + "\n\n" + "\n".join(lines)
+
+    with open(HOSTS_PATH, "w") as f:
+        f.write(content)
+
+    _flush_dns()
+
+
+def hosts_unblock():
+    """Remove YouTube domains from /etc/hosts."""
+    with open(HOSTS_PATH, "r") as f:
+        content = f.read()
+
+    content = _remove_hosts_block(content)
+
+    with open(HOSTS_PATH, "w") as f:
+        f.write(content)
+
+    _flush_dns()
+
+
+def hosts_check():
+    """Return True if hosts block is present."""
+    with open(HOSTS_PATH, "r") as f:
+        return HOSTS_START in f.read()
+
+
+def _remove_hosts_block(content):
+    lines = content.split("\n")
+    result = []
+    inside = False
+    for line in lines:
+        if HOSTS_START in line:
+            inside = True
+            continue
+        if HOSTS_END in line:
+            inside = False
+            continue
+        if not inside:
+            result.append(line)
+    # Clean up extra blank lines at the end
+    while result and result[-1].strip() == "":
+        result.pop()
+    return "\n".join(result) + "\n"
+
+
+def _flush_dns():
+    subprocess.run(
+        ["dscacheutil", "-flushcache"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["killall", "-HUP", "mDNSResponder"],
+        capture_output=True,
+    )
+
+
+# ── Certificate Generation ────────────────────────────────────────────
+
+def generate_certs():
+    """Generate self-signed cert with SANs for all YouTube domains."""
+    san_entries = ",".join(f"DNS:{d}" for d in YOUTUBE_DOMAINS)
+    name_constraints = ",".join(f"permitted;DNS:{d}" for d in YOUTUBE_DOMAINS)
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-new", "-nodes",
+            "-keyout", KEY_FILE,
+            "-out", CERT_FILE,
+            "-days", "3650",
+            "-subj", "/CN=YTBlock CA",
+            "-addext", f"subjectAltName={san_entries}",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", f"nameConstraints=critical,{name_constraints}",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    os.chmod(KEY_FILE, 0o600)
+    print("  Generated self-signed certificate")
+
+
+def trust_cert():
+    """Add cert to macOS system keychain as trusted."""
+    subprocess.run(
+        [
+            "sudo", "security", "add-trusted-cert",
+            "-d", "-r", "trustRoot",
+            "-k", "/Library/Keychains/System.keychain",
+            CERT_FILE,
+        ],
+        check=True,
+    )
+    print("  Added certificate to system keychain")
+
+
+def untrust_cert():
+    """Remove cert from macOS system keychain."""
+    subprocess.run(
+        [
+            "sudo", "security", "remove-trusted-cert",
+            "-d", CERT_FILE,
+        ],
+        capture_output=True,
+    )
+
+
+# ── HTTP/HTTPS Server ─────────────────────────────────────────────────
+
+class RickrollHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Check if we should auto-reblock
+        self._check_reblock()
+
+        if self.path == "/rickroll.mp4" and os.path.exists(VIDEO_FILE):
+            self._serve_video()
+        elif self.path == "/count":
+            self._serve_count()
+        else:
+            self._serve_rickroll()
+
+    def do_HEAD(self):
+        self._check_reblock()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+
+    def do_POST(self):
+        self.do_GET()
+
+    def _serve_rickroll(self):
+        if self.path in ("/", "/index.html"):
+            count = increment_rickroll()
+        html = RICKROLL_HTML
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        content = html.encode("utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _serve_video(self):
+        file_size = os.path.getsize(VIDEO_FILE)
+        range_header = self.headers.get("Range")
+
+        if range_header:
+            # Handle Range requests for video seeking
+            try:
+                range_val = range_header.replace("bytes=", "").split(",")[0]  # first range only
+                start_str, end_str = range_val.split("-")
+                start = int(start_str) if start_str else max(0, file_size - int(end_str))
+                end = min(int(end_str), file_size - 1) if end_str and start_str else file_size - 1
+                if start < 0 or start >= file_size or end < start:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.end_headers()
+                    return
+            except (ValueError, IndexError):
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
+
+            length = end - start + 1
+
+            self.send_response(206)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+            with open(VIDEO_FILE, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+            with open(VIDEO_FILE, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
+    def _serve_count(self):
+        state = load_state()
+        data = json.dumps({"count": state["rickroll_count"]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _check_reblock(self):
+        state = load_state()
+        if state.get("unblock_until"):
+            deadline = datetime.datetime.fromisoformat(state["unblock_until"])
+            if datetime.datetime.now() >= deadline:
+                state["unblock_until"] = None
+                state["blocked"] = True
+                state["disable_step"] = 0
+                state["cooldown_started"] = None
+                save_state(state)
+                if os.geteuid() == 0:
+                    hosts_block()
+
+    def log_message(self, format, *args):
+        # Suppress default logging to stderr in daemon mode
+        pass
+
+
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, ReusableTCPServer):
+    daemon_threads = True
+
+
+def run_server():
+    """Run HTTP (80) and HTTPS (443) servers."""
+    # Periodic hosts check thread
+    def hosts_watchdog():
+        while True:
+            time.sleep(60)
+            try:
+                state = load_state()
+                if state.get("blocked", True) and not hosts_check():
+                    hosts_block()
+                    print(f"[{datetime.datetime.now()}] Hosts entries restored by watchdog")
+            except Exception as e:
+                print(f"[{datetime.datetime.now()}] Watchdog error: {e}")
+
+    watchdog = threading.Thread(target=hosts_watchdog, daemon=True)
+    watchdog.start()
+
+    # HTTP server on port 80
+    http_server = ThreadedHTTPServer(("127.0.0.1", 80), RickrollHandler)
+
+    # HTTPS server on port 443
+    https_server = ThreadedHTTPServer(("127.0.0.1", 443), RickrollHandler)
+    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+        https_server.socket = ctx.wrap_socket(https_server.socket, server_side=True)
+
+    print(f"[{datetime.datetime.now()}] ytblock server starting on ports 80 and 443")
+
+    http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+    https_thread = threading.Thread(target=https_server.serve_forever, daemon=True)
+
+    http_thread.start()
+    https_thread.start()
+
+    # Block main thread
+    try:
+        while True:
+            time.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        http_server.shutdown()
+        https_server.shutdown()
+        print(f"\n[{datetime.datetime.now()}] Server stopped")
+
+
+# ── Friction-Based Disable ─────────────────────────────────────────────
+
+def read_char():
+    """Read a single character without echo (blocks copy-paste of full strings)."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return ch
+
+
+def step1_cooldown(state):
+    """Step 1: 30-minute cooldown timer."""
+    print("\n━━━ Step 1/5: Cooldown Timer ━━━\n")
+
+    if state.get("cooldown_started"):
+        started = datetime.datetime.fromisoformat(state["cooldown_started"])
+        elapsed = (datetime.datetime.now() - started).total_seconds()
+        if elapsed < COOLDOWN_SECONDS:
+            remaining = int(COOLDOWN_SECONDS - elapsed)
+            mins, secs = divmod(remaining, 60)
+            resume_time = started + datetime.timedelta(seconds=COOLDOWN_SECONDS)
+            print(f"  Cooldown in progress. {mins}m {secs}s remaining.")
+            print(f"  Run `ytblock disable` again after {resume_time.strftime('%H:%M')}.")
+            return False
+        else:
+            print("  Cooldown complete!")
+            return True
+    else:
+        state["cooldown_started"] = datetime.datetime.now().isoformat()
+        state["disable_step"] = 1
+        save_state(state)
+        resume_time = datetime.datetime.now() + datetime.timedelta(seconds=COOLDOWN_SECONDS)
+        print(f"  Starting 30-minute cooldown...")
+        print(f"  Come back and run `ytblock disable` again after {resume_time.strftime('%H:%M')}.")
+        return False
+
+
+def step2_typing(state):
+    """Step 2: Type a long confirmation string character by character."""
+    print("\n━━━ Step 2/5: Type Confirmation ━━━\n")
+    phrase = random.choice(CONFIRMATION_PHRASES)
+    print("  Type the following phrase EXACTLY (input is hidden to prevent copy-paste):\n")
+    print(f'  "{phrase}"\n')
+
+    while True:
+        print("  Start typing: ", end="", flush=True)
+        pos = 0
+        failed = False
+        while pos < len(phrase):
+            ch = read_char()
+            if ch == "\x03":  # Ctrl+C
+                print("\n\n  Aborted.")
+                sys.exit(1)
+            if ch == "\x7f" or ch == "\x08":  # Backspace
+                if pos > 0:
+                    pos -= 1
+                    print("\b \b", end="", flush=True)
+                continue
+            if ch == phrase[pos]:
+                print("*", end="", flush=True)
+                pos += 1
+            else:
+                print(f"\n\n  Mismatch at character {pos + 1}. Start over.\n")
+                failed = True
+                break
+        if not failed:
+            print("\n\n  Confirmed!")
+            return True
+
+
+def step3_math(state):
+    """Step 3: Solve 5 math problems of increasing difficulty."""
+    print("\n━━━ Step 3/5: Math Problems ━━━\n")
+    print("  Solve 5 problems to continue. 3 attempts each.\n")
+
+    problems = _generate_math_problems()
+    for i, (question, answer, accept) in enumerate(problems, 1):
+        solved = False
+        for attempt in range(3):
+            try:
+                user_answer = input(f"  [{i}/5] {question} > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Aborted.")
+                sys.exit(1)
+
+            if user_answer in accept:
+                print(f"  Correct!\n")
+                solved = True
+                break
+            else:
+                remaining = 2 - attempt
+                if remaining > 0:
+                    print(f"  Wrong. {remaining} attempt(s) left.\n")
+                else:
+                    print(f"  Wrong. Out of attempts. Restarting from step 1.\n")
+
+        if not solved:
+            # Reset to step 1
+            state["disable_step"] = 0
+            state["cooldown_started"] = None
+            save_state(state)
+            return False
+
+    print("  All correct!")
+    return True
+
+
+def _generate_math_problems():
+    """Generate 5 math problems with increasing difficulty."""
+    problems = []
+
+    # 1. Basic arithmetic
+    a, b = random.randint(100, 999), random.randint(100, 999)
+    ans = a + b
+    problems.append((f"{a} + {b} = ?", ans, [str(ans)]))
+
+    # 2. Multi-step arithmetic
+    a, b, c = random.randint(10, 25), random.randint(10, 20), random.randint(10, 50)
+    ans = (a * b) - c
+    problems.append((f"({a} x {b}) - {c} = ?", ans, [str(ans)]))
+
+    # 3. Basic algebra
+    x = random.randint(2, 15)
+    a = random.randint(2, 8)
+    b = random.randint(1, 20)
+    rhs = a * x + b
+    problems.append((f"Solve for x: {a}x + {b} = {rhs}  ->  x = ?", x, [str(x)]))
+
+    # 4. Quadratic (simple)
+    x = random.randint(2, 6)
+    a = random.randint(1, 3)
+    rhs = a * x * x
+    problems.append((
+        f"Solve for x: {a}x\u00b2 = {rhs}  ->  x = ? (positive root)",
+        x,
+        [str(x)],
+    ))
+
+    # 5. Word problem
+    speed1 = random.choice([40, 50, 60, 80])
+    speed2 = random.choice([30, 40, 50, 60])
+    dist1 = speed1 * random.randint(1, 3)
+    dist2 = speed2 * random.randint(1, 3)
+    time1 = dist1 / speed1
+    time2 = dist2 / speed2
+    total = int(time1 + time2)
+    problems.append((
+        f"A car drives {dist1}km at {speed1}km/h, then {dist2}km at {speed2}km/h. Total time in hours?",
+        total,
+        [str(total), str(float(total)), f"{total}.0"],
+    ))
+
+    return problems
+
+
+def step4_journal(state):
+    """Step 4: Write a 100+ word journal entry."""
+    print("\n━━━ Step 4/5: Journaling ━━━\n")
+    print("  Why do you want to unblock YouTube right now?")
+    print("  Write at least 100 words. Be honest with yourself.")
+    print("  Type your response and press Enter when done.\n")
+
+    lines = []
+    word_count = 0
+    while word_count < 100:
+        try:
+            line = input("  > ")
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Aborted.")
+            sys.exit(1)
+        lines.append(line)
+        word_count = len(" ".join(lines).split())
+        if word_count < 100:
+            print(f"  ({word_count}/100 words \u2014 keep going)\n")
+
+    entry = " ".join(lines)
+    print(f"\n  Word count: {word_count}. Saved to journal.")
+
+    # Append to journal (create with restricted permissions if new)
+    if not os.path.exists(JOURNAL_FILE):
+        fd = os.open(JOURNAL_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+        os.close(fd)
+    with open(JOURNAL_FILE, "a") as f:
+        f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n")
+        f.write(entry)
+        f.write("\n")
+
+    return True
+
+
+def step5_physical(state):
+    """Step 5: Physical challenge (honor system)."""
+    print("\n━━━ Step 5/5: Physical Challenge ━━━\n")
+    challenge, confirmation = random.choice(PHYSICAL_CHALLENGES)
+    print(f"  {challenge}.\n")
+    print(f'  When done, type exactly: "{confirmation}"\n')
+
+    while True:
+        try:
+            response = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Aborted.")
+            sys.exit(1)
+
+        if response == confirmation:
+            print("\n  Well done!")
+            return True
+        else:
+            print(f'  That doesn\'t match. Type exactly: "{confirmation}"\n')
+
+
+def run_disable():
+    """Run the 5-step friction-based disable process."""
+    state = load_state()
+
+    if not state.get("blocked", True):
+        if state.get("unblock_until"):
+            deadline = datetime.datetime.fromisoformat(state["unblock_until"])
+            remaining = (deadline - datetime.datetime.now()).total_seconds()
+            if remaining > 0:
+                mins = int(remaining // 60)
+                print(f"\n  YouTube is already unblocked. {mins} minutes remaining.")
+                print(f"  Auto-reblocking at {deadline.strftime('%H:%M')}.\n")
+                return
+        print("\n  YouTube is not currently blocked.\n")
+        return
+
+    current_step = state.get("disable_step", 0)
+
+    # Step 1: Cooldown
+    if current_step < 1:
+        if not step1_cooldown(state):
+            return
+        state["disable_step"] = 1
+        save_state(state)
+    elif current_step == 1:
+        # Check if cooldown has passed
+        if not step1_cooldown(state):
+            return
+
+    # Step 2: Typing
+    if current_step < 2:
+        state["disable_step"] = 2
+        save_state(state)
+    if state.get("disable_step", 0) <= 2:
+        if not step2_typing(state):
+            return
+        state["disable_step"] = 3
+        save_state(state)
+
+    # Step 3: Math
+    if state.get("disable_step", 0) <= 3:
+        if not step3_math(state):
+            print("  Failed math. Progress reset to step 1.")
+            return
+        state["disable_step"] = 4
+        save_state(state)
+
+    # Step 4: Journal
+    if state.get("disable_step", 0) <= 4:
+        if not step4_journal(state):
+            return
+        state["disable_step"] = 5
+        save_state(state)
+
+    # Step 5: Physical
+    if state.get("disable_step", 0) <= 5:
+        if not step5_physical(state):
+            return
+
+    # All steps passed — unblock for 30 minutes
+    unblock_until = datetime.datetime.now() + datetime.timedelta(seconds=UNBLOCK_SECONDS)
+    state["blocked"] = False
+    state["unblock_until"] = unblock_until.isoformat()
+    state["disable_step"] = 0
+    state["cooldown_started"] = None
+    save_state(state)
+
+    # Remove hosts block (needs sudo)
+    print("\n  Removing YouTube block (requires sudo)...\n")
+    subprocess.run(
+        ["sudo", sys.executable, os.path.abspath(__file__), "_unblock_hosts"],
+        check=True,
+    )
+
+    # Spawn background reblock timer
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "_reblock_timer", str(UNBLOCK_SECONDS)],
+        start_new_session=True,
+        stdout=open(os.devnull, "w"),
+        stderr=open(os.devnull, "w"),
+    )
+
+    print(f"\n  YouTube unblocked for 30 minutes.")
+    print(f"  Auto-reblocking at {unblock_until.strftime('%H:%M')}.")
+    print(f"  Use this time wisely.\n")
+
+
+# ── Internal Commands ──────────────────────────────────────────────────
+
+def cmd_unblock_hosts():
+    """Internal: remove hosts block (run as sudo)."""
+    hosts_unblock()
+
+
+def cmd_reblock_timer(seconds):
+    """Internal: sleep then re-enable hosts block."""
+    time.sleep(int(seconds))
+    state = load_state()
+    state["blocked"] = True
+    state["unblock_until"] = None
+    state["disable_step"] = 0
+    state["cooldown_started"] = None
+    save_state(state)
+    # Re-add hosts (we may not have sudo here, but the server watchdog will catch it)
+    try:
+        hosts_block()
+    except PermissionError:
+        pass  # Server watchdog will re-add within 60 seconds
+
+
+def cmd_reblock_hosts():
+    """Internal: add hosts block (run as sudo)."""
+    hosts_block()
+
+
+# ── CLI Commands ───────────────────────────────────────────────────────
+
+def cmd_install(args):
+    """Full first-time setup."""
+    print("\n  ytblock installer\n")
+
+    if os.geteuid() != 0:
+        print("  Error: install requires sudo. Run: sudo ytblock install")
+        sys.exit(1)
+
+    # Get the real user's home directory (not root's)
+    real_user = os.environ.get("SUDO_USER", os.environ.get("USER"))
+    real_home = os.path.expanduser(f"~{real_user}") if real_user else os.path.expanduser("~")
+    real_base = os.path.join(real_home, ".youtube-blocker")
+
+    os.makedirs(real_base, exist_ok=True)
+    print("  [1/8] Created directory")
+
+    # Copy script
+    script_src = os.path.abspath(__file__)
+    script_dst = os.path.join(real_base, "ytblock")
+    if script_src != script_dst:
+        import shutil
+        shutil.copy2(script_src, script_dst)
+    os.chmod(script_dst, 0o755)
+    print("  [2/8] Installed script")
+
+    # Download rickroll video
+    video_dst = os.path.join(real_base, "rickroll.mp4")
+    if not os.path.exists(video_dst):
+        print("  [3/8] Downloading rickroll video (this may take a moment)...")
+        yt_dlp = "/opt/homebrew/bin/yt-dlp"
+        if not os.path.exists(yt_dlp):
+            # Try PATH
+            yt_dlp = "yt-dlp"
+        try:
+            subprocess.run(
+                [
+                    yt_dlp,
+                    "-f", "mp4",
+                    "-o", video_dst,
+                    "--max-filesize", "100M",
+                    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                ],
+                check=True,
+            )
+        except FileNotFoundError:
+            print("  Error: yt-dlp not found. Install with: brew install yt-dlp")
+            sys.exit(1)
+    else:
+        print("  [3/8] Rickroll video already exists")
+
+    # Generate certs
+    cert_dst = os.path.join(real_base, "cert.pem")
+    key_dst = os.path.join(real_base, "key.pem")
+    if not os.path.exists(cert_dst):
+        print("  [4/8] Generating SSL certificate...")
+        san_entries = ",".join(f"DNS:{d}" for d in YOUTUBE_DOMAINS)
+        name_constraints = ",".join(f"permitted;DNS:{d}" for d in YOUTUBE_DOMAINS)
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-new", "-nodes",
+                "-keyout", key_dst,
+                "-out", cert_dst,
+                "-days", "3650",
+                "-subj", "/CN=YTBlock CA",
+                "-addext", f"subjectAltName={san_entries}",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", f"nameConstraints=critical,{name_constraints}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        os.chmod(key_dst, 0o600)
+    else:
+        print("  [4/8] Certificate already exists")
+
+    # Trust cert
+    print("  [5/8] Adding certificate to system keychain (may prompt for password)...")
+    subprocess.run(
+        [
+            "security", "add-trusted-cert",
+            "-d", "-r", "trustRoot",
+            "-k", "/Library/Keychains/System.keychain",
+            cert_dst,
+        ],
+        check=False,  # Don't fail if already trusted
+    )
+
+    # Write HTML
+    html_dst = os.path.join(real_base, "rickroll.html")
+    with open(html_dst, "w") as f:
+        f.write(RICKROLL_HTML)
+    print("  [6/8] Created rickroll page")
+
+    # Initialize state
+    state_dst = os.path.join(real_base, "state.json")
+    if not os.path.exists(state_dst):
+        with open(state_dst, "w") as f:
+            json.dump({
+                "rickroll_count": 0,
+                "blocked": True,
+                "unblock_until": None,
+                "cooldown_started": None,
+                "disable_step": 0,
+                "installed_at": datetime.datetime.now().isoformat(),
+            }, f, indent=2)
+
+    # Fix ownership (files were created as root)
+    if real_user:
+        subprocess.run(["chown", "-R", real_user, real_base], capture_output=True)
+
+    # Write hosts
+    hosts_block()
+    print("  [7/8] Blocked YouTube in /etc/hosts")
+
+    # Write and load LaunchDaemon
+    plist_content = PLIST_TEMPLATE.format(
+        script_path=script_dst,
+        log_path=os.path.join(real_base, "server.log"),
+    )
+    with open(PLIST_PATH, "w") as f:
+        f.write(plist_content)
+
+    # Unload first in case it's already loaded
+    subprocess.run(["launchctl", "unload", PLIST_PATH], capture_output=True)
+    subprocess.run(["launchctl", "load", PLIST_PATH], check=True)
+    print("  [8/8] Started server daemon")
+
+    # Symlink
+    os.makedirs(os.path.dirname(SYMLINK_PATH), exist_ok=True)
+    if os.path.exists(SYMLINK_PATH) or os.path.islink(SYMLINK_PATH):
+        os.remove(SYMLINK_PATH)
+    os.symlink(script_dst, SYMLINK_PATH)
+
+    print(f"""
+  Installation complete!
+
+  YouTube is now blocked. Visiting youtube.com will show a rickroll.
+
+  Commands:
+    ytblock status    \u2014 Check current status
+    ytblock disable   \u2014 Start 5-step unblock process
+    sudo ytblock enable   \u2014 Re-block YouTube
+    sudo ytblock uninstall \u2014 Remove everything
+
+  Note for Firefox users: set security.enterprise_roots.enabled = true
+  in about:config to avoid certificate warnings.
+""")
+
+
+def cmd_uninstall(args):
+    """Remove everything."""
+    if os.geteuid() != 0:
+        print("  Error: uninstall requires sudo. Run: sudo ytblock uninstall")
+        sys.exit(1)
+
+    print("\n  Uninstalling ytblock...\n")
+
+    # Kill any orphaned reblock timer processes
+    subprocess.run(
+        ["pkill", "-f", "ytblock.*_reblock_timer"],
+        capture_output=True,
+    )
+
+    # Unload daemon
+    if os.path.exists(PLIST_PATH):
+        subprocess.run(["launchctl", "unload", PLIST_PATH], capture_output=True)
+        os.remove(PLIST_PATH)
+        print("  Stopped and removed server daemon")
+
+    # Remove hosts entries
+    hosts_unblock()
+    print("  Removed YouTube block from /etc/hosts")
+
+    # Remove cert from keychain
+    if os.path.exists(CERT_FILE):
+        subprocess.run(
+            ["security", "remove-trusted-cert", "-d", CERT_FILE],
+            capture_output=True,
+        )
+        print("  Removed certificate from keychain")
+
+    # Remove symlink
+    if os.path.islink(SYMLINK_PATH):
+        os.remove(SYMLINK_PATH)
+        print("  Removed symlink")
+
+    # Remove base directory
+    import shutil
+    if os.path.exists(BASE_DIR):
+        shutil.rmtree(BASE_DIR)
+        print("  Removed ~/.youtube-blocker")
+
+    print("\n  ytblock uninstalled. YouTube is now accessible.\n")
+
+
+def cmd_enable(args):
+    """Re-block YouTube."""
+    if os.geteuid() != 0:
+        print("  Error: enable requires sudo. Run: sudo ytblock enable")
+        sys.exit(1)
+
+    hosts_block()
+    state = load_state()
+    state["blocked"] = True
+    state["unblock_until"] = None
+    state["disable_step"] = 0
+    state["cooldown_started"] = None
+    save_state(state)
+    print("\n  YouTube blocked.\n")
+
+
+def cmd_disable(args):
+    """Run friction-based disable process."""
+    run_disable()
+
+
+def cmd_status(args):
+    """Show current status."""
+    state = load_state()
+
+    # Check and enforce auto-reblock
+    if state.get("unblock_until"):
+        deadline = datetime.datetime.fromisoformat(state["unblock_until"])
+        if datetime.datetime.now() >= deadline:
+            state["blocked"] = True
+            state["unblock_until"] = None
+            state["disable_step"] = 0
+            state["cooldown_started"] = None
+            save_state(state)
+            if os.geteuid() == 0:
+                hosts_block()
+
+    blocked = state.get("blocked", True)
+    count = state.get("rickroll_count", 0)
+
+    print(f"\n  ytblock status")
+    print(f"  {'\u2501' * 30}")
+    print(f"  Status:    {'BLOCKED' if blocked else 'UNBLOCKED'}")
+    print(f"  Rickrolls: {count}")
+
+    if not blocked and state.get("unblock_until"):
+        deadline = datetime.datetime.fromisoformat(state["unblock_until"])
+        remaining = (deadline - datetime.datetime.now()).total_seconds()
+        if remaining > 0:
+            mins = int(remaining // 60)
+            secs = int(remaining % 60)
+            print(f"  Reblocks:  {deadline.strftime('%H:%M')} ({mins}m {secs}s)")
+
+    if state.get("cooldown_started") and state.get("disable_step", 0) >= 1:
+        started = datetime.datetime.fromisoformat(state["cooldown_started"])
+        elapsed = (datetime.datetime.now() - started).total_seconds()
+        if elapsed < COOLDOWN_SECONDS:
+            remaining = int(COOLDOWN_SECONDS - elapsed)
+            mins, secs = divmod(remaining, 60)
+            print(f"  Cooldown:  {mins}m {secs}s remaining")
+        else:
+            print(f"  Cooldown:  complete (run `ytblock disable` to continue)")
+
+    hosts_present = hosts_check()
+    print(f"  Hosts:     {'present' if hosts_present else 'MISSING'}")
+    print(f"  Video:     {'found' if os.path.exists(VIDEO_FILE) else 'missing'}")
+    print(f"  Cert:      {'found' if os.path.exists(CERT_FILE) else 'missing'}")
+    print()
+
+
+# ── Main ───────────────────────────────────────────────────────────────
+
+def main():
+    # Handle internal commands (not exposed in help)
+    # These are only valid when invoked by the script itself (serve, reblock_timer)
+    # or after the friction process has set the unblock state (_unblock_hosts).
+    if len(sys.argv) >= 2:
+        if sys.argv[1] == "serve":
+            run_server()
+            return
+        if sys.argv[1] == "_unblock_hosts":
+            # Only allow if state shows an active unblock window
+            state = load_state()
+            if state.get("unblock_until") and not state.get("blocked", True):
+                cmd_unblock_hosts()
+            else:
+                print("  Error: unblock not authorized. Use `ytblock disable`.")
+                sys.exit(1)
+            return
+        if sys.argv[1] == "_reblock_timer" and len(sys.argv) >= 3:
+            try:
+                seconds = int(sys.argv[2])
+                if seconds < 0:
+                    seconds = 0
+            except ValueError:
+                print("  Error: invalid timer value.")
+                sys.exit(1)
+            cmd_reblock_timer(seconds)
+            return
+        if sys.argv[1] == "_reblock_hosts":
+            cmd_reblock_hosts()
+            return
+
+    parser = argparse.ArgumentParser(
+        description="ytblock \u2014 YouTube addiction blocker for macOS",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            examples:
+              sudo ytblock install     Set up everything
+              ytblock status           Check if YouTube is blocked
+              ytblock disable          Start 5-step unblock process
+              sudo ytblock enable      Re-block YouTube
+              sudo ytblock uninstall   Remove everything
+        """),
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    subparsers.add_parser("install", help="Full first-time setup (requires sudo)")
+    subparsers.add_parser("uninstall", help="Remove everything (requires sudo)")
+    subparsers.add_parser("enable", help="Re-block YouTube (requires sudo)")
+    subparsers.add_parser("disable", help="5-step friction-based unblock process")
+    subparsers.add_parser("status", help="Show current status")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    commands = {
+        "install": cmd_install,
+        "uninstall": cmd_uninstall,
+        "enable": cmd_enable,
+        "disable": cmd_disable,
+        "status": cmd_status,
+    }
+
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

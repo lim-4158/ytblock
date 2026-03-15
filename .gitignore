@@ -1,0 +1,18 @@
+# Runtime files (generated during install, not part of the repo)
+rickroll.mp4
+cert.pem
+key.pem
+state.json
+state.json.tmp
+state.lock
+journal.log
+server.log
+rickroll.html
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
