@@ -144,6 +144,12 @@ RICKROLL_HTML = """\
         fetch('/count').then(r=>r.json()).then(d=>{
             document.getElementById('count').textContent=d.count;
         }).catch(()=>{});
+        if('serviceWorker' in navigator){
+            navigator.serviceWorker.getRegistrations().then(function(regs){
+                for(var r of regs){r.unregister();}
+                if(regs.length>0){location.reload();}
+            });
+        }
     </script>
 </body>
 </html>
